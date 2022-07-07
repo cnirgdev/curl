@@ -5,11 +5,11 @@
  *                            | (__| |_| |  _ <| |___
  *                             \___|\___/|_| \_\_____|
  *
- * Copyright (C) 1998 - 2011, Daniel Stenberg, <daniel@haxx.se>, et al.
+ * Copyright (C) 1998 - 2022, Daniel Stenberg, <daniel@haxx.se>, et al.
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
- * are also available at http://curl.haxx.se/docs/copyright.html.
+ * are also available at https://curl.se/docs/copyright.html.
  *
  * You may opt to use, copy, modify, merge, publish, distribute and/or sell
  * copies of the Software, and permit persons to whom the Software is
@@ -18,9 +18,13 @@
  * This software is distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY
  * KIND, either express or implied.
  *
+ * SPDX-License-Identifier: curl
+ *
  ***************************************************************************/
-/* Example source code to show how the callback function can be used to
- * download data into a chunk of memory instead of storing it in a file.
+/* <DESC>
+ * Shows how the write callback function can be used to download data into a
+ * chunk of memory instead of storing it in a file.
+ * </DESC>
  */
 
 #include <stdio.h>
@@ -34,20 +38,20 @@ struct MemoryStruct {
   size_t size;
 };
 
-
 static size_t
 WriteMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp)
 {
   size_t realsize = size * nmemb;
   struct MemoryStruct *mem = (struct MemoryStruct *)userp;
 
-  mem->memory = realloc(mem->memory, mem->size + realsize + 1);
-  if (mem->memory == NULL) {
+  char *ptr = realloc(mem->memory, mem->size + realsize + 1);
+  if(!ptr) {
     /* out of memory! */
     printf("not enough memory (realloc returned NULL)\n");
-    exit(EXIT_FAILURE);
+    return 0;
   }
 
+  mem->memory = ptr;
   memcpy(&(mem->memory[mem->size]), contents, realsize);
   mem->size += realsize;
   mem->memory[mem->size] = 0;
@@ -55,10 +59,10 @@ WriteMemoryCallback(void *contents, size_t size, size_t nmemb, void *userp)
   return realsize;
 }
 
-
 int main(void)
 {
   CURL *curl_handle;
+  CURLcode res;
 
   struct MemoryStruct chunk;
 
@@ -71,7 +75,7 @@ int main(void)
   curl_handle = curl_easy_init();
 
   /* specify URL to get */
-  curl_easy_setopt(curl_handle, CURLOPT_URL, "http://www.example.com/");
+  curl_easy_setopt(curl_handle, CURLOPT_URL, "https://www.example.com/");
 
   /* send all data to this function  */
   curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
@@ -79,33 +83,35 @@ int main(void)
   /* we pass our 'chunk' struct to the callback function */
   curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, (void *)&chunk);
 
-  /* some servers don't like requests that are made without a user-agent
+  /* some servers do not like requests that are made without a user-agent
      field, so we provide one */
   curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "libcurl-agent/1.0");
 
   /* get it! */
-  curl_easy_perform(curl_handle);
+  res = curl_easy_perform(curl_handle);
+
+  /* check for errors */
+  if(res != CURLE_OK) {
+    fprintf(stderr, "curl_easy_perform() failed: %s\n",
+            curl_easy_strerror(res));
+  }
+  else {
+    /*
+     * Now, our chunk.memory points to a memory block that is chunk.size
+     * bytes big and contains the remote file.
+     *
+     * Do something nice with it!
+     */
+
+    printf("%lu bytes retrieved\n", (unsigned long)chunk.size);
+  }
 
   /* cleanup curl stuff */
   curl_easy_cleanup(curl_handle);
 
-  /*
-   * Now, our chunk.memory points to a memory block that is chunk.size
-   * bytes big and contains the remote file.
-   *
-   * Do something nice with it!
-   *
-   * You should be aware of the fact that at this point we might have an
-   * allocated data block, and nothing has yet deallocated that data. So when
-   * you're done with it, you should free() it as a nice application.
-   */
+  free(chunk.memory);
 
-  printf("%lu bytes retrieved\n", (long)chunk.size);
-
-  if(chunk.memory)
-    free(chunk.memory);
-
-  /* we're done with libcurl, so clean it up */
+  /* we are done with libcurl, so clean it up */
   curl_global_cleanup();
 
   return 0;

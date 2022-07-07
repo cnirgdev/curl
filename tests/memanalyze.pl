@@ -6,11 +6,11 @@
 #                            | (__| |_| |  _ <| |___
 #                             \___|\___/|_| \_\_____|
 #
-# Copyright (C) 1998 - 2013, Daniel Stenberg, <daniel@haxx.se>, et al.
+# Copyright (C) 1998 - 2022, Daniel Stenberg, <daniel@haxx.se>, et al.
 #
 # This software is licensed as described in the file COPYING, which
 # you should have received as part of this distribution. The terms
-# are also available at http://curl.haxx.se/docs/copyright.html.
+# are also available at https://curl.se/docs/copyright.html.
 #
 # You may opt to use, copy, modify, merge, publish, distribute and/or sell
 # copies of the Software, and permit persons to whom the Software is
@@ -18,6 +18,8 @@
 #
 # This software is distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY
 # KIND, either express or implied.
+#
+# SPDX-License-Identifier: curl
 #
 ###########################################################################
 #
@@ -31,7 +33,11 @@ my $mallocs=0;
 my $callocs=0;
 my $reallocs=0;
 my $strdups=0;
+my $wcsdups=0;
 my $showlimit;
+my $sends=0;
+my $recvs=0;
+my $sockets=0;
 
 while(1) {
     if($ARGV[0] eq "-v") {
@@ -52,7 +58,8 @@ while(1) {
     }
 }
 
-my $maxmem;
+my $memsum; # the total number of memory allocated over the lifetime
+my $maxmem; # the high water mark
 
 sub newtotal {
     my ($newtot)=@_;
@@ -107,9 +114,12 @@ while(<FILE>) {
         $linenum = $2;
         $function = $3;
 
-        if($function =~ /free\(0x([0-9a-f]*)/) {
-            $addr = $1;
-            if(!exists $sizeataddr{$addr}) {
+        if($function =~ /free\((\(nil\)|0x([0-9a-f]*))/) {
+            $addr = $2;
+            if($1 eq "(nil)") {
+                ; # do nothing when free(NULL)
+            }
+            elsif(!exists $sizeataddr{$addr}) {
                 print "FREE ERROR: No memory allocated: $line\n";
             }
             elsif(-1 == $sizeataddr{$addr}) {
@@ -143,6 +153,7 @@ while(<FILE>) {
 
             $sizeataddr{$addr}=$size;
             $totalmem += $size;
+            $memsum += $size;
 
             if($trace) {
                 print "MALLOC: malloc($size) at $source:$linenum",
@@ -168,6 +179,7 @@ while(<FILE>) {
 
             $sizeataddr{$addr}=$size;
             $totalmem += $size;
+            $memsum += $size;
 
             if($trace) {
                 print "CALLOC: calloc($arg1,$arg2) at $source:$linenum",
@@ -189,6 +201,7 @@ while(<FILE>) {
             $sizeataddr{$oldaddr}=0;
 
             $totalmem += $newsize;
+            $memsum += $size;
             $sizeataddr{$newaddr}=$newsize;
 
             if($trace) {
@@ -211,6 +224,7 @@ while(<FILE>) {
             $sizeataddr{$addr}=$size;
 
             $totalmem += $size;
+            $memsum += $size;
 
             if($trace) {
                 printf("STRDUP: $size bytes at %s, makes totally: %d bytes\n",
@@ -219,6 +233,26 @@ while(<FILE>) {
 
             newtotal($totalmem);
             $strdups++;
+        }
+        elsif($function =~ /wcsdup\(0x([0-9a-f]*)\) \((\d*)\) = 0x([0-9a-f]*)/) {
+            # wcsdup(a5b50) (8) = df7c0
+
+            $dup = $1;
+            $size = $2;
+            $addr = $3;
+            $getmem{$addr}="$source:$linenum";
+            $sizeataddr{$addr}=$size;
+
+            $totalmem += $size;
+            $memsum += $size;
+
+            if($trace) {
+                printf("WCSDUP: $size bytes at %s, makes totally: %d bytes\n",
+                       $getmem{$addr}, $totalmem);
+            }
+
+            newtotal($totalmem);
+            $wcsdups++;
         }
         else {
             print "Not recognized input line: $function\n";
@@ -235,6 +269,7 @@ while(<FILE>) {
             $filedes{$1}=1;
             $getfile{$1}="$source:$linenum";
             $openfile++;
+            $sockets++; # number of socket() calls
         }
         elsif($function =~ /socketpair\(\) = (\d*) (\d*)/) {
             $filedes{$1}=1;
@@ -290,6 +325,14 @@ while(<FILE>) {
     # GETNAME url.c:1901 getnameinfo()
     elsif($_ =~ /^GETNAME ([^ ]*):(\d*) (.*)/) {
         # not much to do
+    }
+    # SEND url.c:1901 send(83) = 83
+    elsif($_ =~ /^SEND ([^ ]*):(\d*) (.*)/) {
+        $sends++;
+    }
+    # RECV url.c:1901 recv(102400) = 256
+    elsif($_ =~ /^RECV ([^ ]*):(\d*) (.*)/) {
+        $recvs++;
     }
 
     # ADDR url.c:1282 getaddrinfo() = 0x5ddd
@@ -375,11 +418,17 @@ if($addrinfos) {
 
 if($verbose) {
     print "Mallocs: $mallocs\n",
-    "Reallocs: $reallocs\n",
-    "Callocs: $callocs\n",
-    "Strdups:  $strdups\n",
-    "Frees: $frees\n",
-    "Allocations: ".($mallocs + $callocs + $reallocs + $strdups)."\n";
+        "Reallocs: $reallocs\n",
+        "Callocs: $callocs\n",
+        "Strdups:  $strdups\n",
+        "Wcsdups:  $wcsdups\n",
+        "Frees: $frees\n",
+        "Sends: $sends\n",
+        "Recvs: $recvs\n",
+        "Sockets: $sockets\n",
+        "Allocations: ".($mallocs + $callocs + $reallocs + $strdups + $wcsdups)."\n",
+        "Operations: ".($mallocs + $callocs + $reallocs + $strdups + $wcsdups + $sends + $recvs + $sockets)."\n";
 
     print "Maximum allocated: $maxmem\n";
+    print "Total allocated: $memsum\n";
 }
